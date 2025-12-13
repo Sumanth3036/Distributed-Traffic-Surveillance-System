@@ -124,7 +124,7 @@ docker-compose start helmet_worker
 
 ## 🤝 Author
 
-Built by **Lohith Kandibanda** – for scalable, secure, and intelligent traffic monitoring 🚗🟍️🚵️
+Built by **Sumanth Ponugupati** – for scalable, secure, and intelligent traffic monitoring 🚗🟍️🚵️
 
 Feel free to ⭐ the repo and contribute!
 
