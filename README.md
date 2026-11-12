@@ -1,135 +1,154 @@
-# 🚦 Distributed Traffic Surveillance System with API Authentication
+# Distributed Traffic Surveillance System
 
-An end-to-end, fault-tolerant distributed system for real-time **traffic surveillance**, utilizing **YOLOv11** for object detection, **PaddleOCR** for license plate recognition, and an **asynchronous master-worker architecture** built using **FastAPI**, **RabbitMQ**, and **Redis**. The project provides a full-stack experience with a **Streamlit-based UI**, robust backend API, Docker-based deployment, and fault tolerance mechanisms.
+A fault-tolerant, distributed system that detects vehicles, reads license plates, and flags helmet violations in images and video. Work is split across independent workers connected by a message queue, so one failing component does not stop the rest.
 
----
-
-## 📁 Project Structure
-
-```
-.
-├── api_server/           # FastAPI backend handling uploads & authentication
-├── master_worker/        # Orchestrates frame splitting and task delegation
-├── vehicle_worker/       # Detects vehicles using YOLOv11
-├── plate_worker/         # Extracts license plates using PaddleOCR
-├── helmet_worker/        # Detects helmet violations using YOLOv9n
-├── frontend/             # Streamlit-based UI to upload/view results
-├── static/               # Shared folder for annotated results
-├── models/               # Stores YOLO weights
-├── docker-compose.yml    # Multi-container orchestration
-└── README.md             # Documentation (this file)
-```
+**Stack:** FastAPI · RabbitMQ · Redis · YOLO · PaddleOCR · OpenCV · Streamlit · Docker Compose
 
 ---
 
-## 🚀 Features
+## What it does
 
-* 🎥 Frame-by-frame video/image analysis
-* 🧠 YOLO-based vehicle & helmet detection
-* 🔍 OCR-based number plate extraction
-* 🐇 Asynchronous RabbitMQ task queues
-* 🧾 Redis for task/result storage & rate limiting
-* 💽 Streamlit-based frontend UI
-* 🐳 Docker Compose for seamless deployment
-* ♻️ Fault tolerance & graceful recovery
+- Accepts an image or video through a web UI or a REST API
+- Splits video into frames and processes them in parallel across specialised workers
+- Detects vehicles (YOLOv11), reads license plates (PaddleOCR), and detects helmet violations (YOLOv9n)
+- Returns an annotated result plus structured detections
+- Keeps working with partial results when one worker is down
 
 ---
 
-## ⚙️ How to Run
+## Architecture
 
-### 1️⃣ Prerequisites
-
-* [Docker](https://www.docker.com/products/docker-desktop)
-* [Docker Compose](https://docs.docker.com/compose/)
-* 8GB+ RAM recommended for parallel processing
-
-### 2️⃣ Clone the Repository
-
-```bash
-git clone https://github.com/lohith-kandibanda/Distributed-Traffic-Surveillance-Image-Processing-System-with-Api-Authentication.git
-cd Distributed-Traffic-Surveillance-Image-Processing-System-with-Api-Authentication
+```mermaid
+flowchart LR
+    U["User<br/>Streamlit UI or API client"] -->|"upload + X-API-Key"| A["API Server<br/>FastAPI"]
+    A -->|"rate limit check"| R[("Redis")]
+    A -->|"create task"| M["Master Worker"]
+    M -->|"publish frame tasks"| Q{{"RabbitMQ"}}
+    Q --> V["Vehicle Worker<br/>YOLOv11"]
+    Q --> P["Plate Worker<br/>PaddleOCR"]
+    Q --> H["Helmet Worker<br/>YOLOv9n"]
+    V -->|"store results"| R
+    P -->|"store results"| R
+    H -->|"store results"| R
+    M -->|"collect results"| R
+    M -->|"annotated output"| S["Shared static folder"]
+    U -->|"GET /result/task_id"| A
+    A --> R
+    A --> S
 ```
 
-### 3️⃣ Build and Start the System
+### Request flow
 
-```bash
-docker-compose up --build
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as API Server
+    participant R as Redis
+    participant M as Master
+    participant Q as RabbitMQ
+    participant W as Workers
+
+    C->>API: POST upload (X-API-Key)
+    API->>R: check rate limit
+    API->>M: create task
+    M->>Q: publish frame tasks
+    Q->>W: deliver tasks
+    W->>R: store detections
+    M->>R: collect results
+    M->>M: annotate frames and save output
+    C->>API: GET /result/{task_id}
+    API-->>C: status, detections, annotated file
 ```
 
-### 4️⃣ Access the Interfaces
+---
 
-* **Streamlit UI**: [http://localhost:8501](http://localhost:8501)
-* **FastAPI Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
-* **RabbitMQ Dashboard**: [http://localhost:15672](http://localhost:15672) (guest/guest)
-* **Redis (CLI)**: `docker exec -it <redis_container> redis-cli`
+## Components
+
+| Service | Folder | Role |
+|---|---|---|
+| API Server | `api_server/` | Handles uploads, authentication, rate limiting, and result retrieval |
+| Master Worker | `master_worker/` | Splits input into frames, dispatches tasks, collects and annotates results |
+| Vehicle Worker | `vehicle_worker/` | Detects vehicles with YOLOv11 |
+| Plate Worker | `plate_worker/` | Extracts license plate text with PaddleOCR |
+| Helmet Worker | `helmet_worker/` | Detects helmet violations with YOLOv9n |
+| Frontend | `frontend/` | Streamlit UI to upload files and view results |
+| Shared storage | `static/`, `models/` | Annotated outputs and model weights |
 
 ---
 
-## 🛡️ API Security
+## Fault tolerance
 
-All API requests must include:
-
-```http
-X-API-Key: traffic123
+```mermaid
+flowchart TD
+    A["Task published to RabbitMQ"] --> B{"Worker available?"}
+    B -->|"Yes"| C["Process and write result to Redis"]
+    B -->|"No, worker crashed"| D["Task stays queued in RabbitMQ"]
+    D --> E["Worker restarts and resumes"]
+    E --> C
+    C --> F["Master collects results"]
+    F --> G{"All results present?"}
+    G -->|"Yes"| H["Full annotated output"]
+    G -->|"No"| I["Partial annotated output"]
 ```
 
-Rate limit: **10 requests/minute per key** (via Redis)
+- The master retries its Redis and RabbitMQ connections until both are ready
+- If a worker crashes, its tasks stay in RabbitMQ until a worker picks them up again
+- Annotated output is still produced when only some results are available
 
----
-
-## 🧪 Demo Flow
-
-1. Upload an image/video via UI or API
-2. Master receives and splits task into frames
-3. Each frame is sent to:
-
-   * `vehicle_worker`
-   * `plate_worker`
-   * `helmet_worker`
-4. Workers store results in Redis
-5. Master fetches, annotates, and saves final output
-6. UI/API fetches results via `/result/{task_id}`
-
----
-
-## 📦 Fault Tolerance
-
-* Master retries Redis & RabbitMQ connection until ready
-* Workers write to Redis; if they crash, tasks remain in RabbitMQ
-* Annotated outputs generated even if partial results available
-
-To demonstrate:
+**Try it yourself:**
 
 ```bash
 docker-compose stop helmet_worker
-# Upload a task and watch the rest of the system work
+# upload a task and watch the other workers continue
 docker-compose start helmet_worker
 ```
 
 ---
 
-## 📊 Tech Stack
+## Quick start
 
-* **YOLOv11m / YOLOv9n** – Object Detection
-* **PaddleOCR** – Number Plate Recognition
-* **FastAPI** – REST API
-* **Redis** – Storage, Status, Rate Limiting
-* **RabbitMQ** – Asynchronous Messaging
-* **OpenCV** – Frame manipulation and video handling
-* **aio-pika** – Async messaging
-* **Docker Compose** – Multi-container deployment
-* **Streamlit** – Web UI
+**Requirements:** Docker, Docker Compose, and 8 GB+ RAM recommended.
 
----
+```bash
+git clone https://github.com/Sumanth3036/Distributed-Traffic-Surveillance-System.git
+cd Distributed-Traffic-Surveillance-System
+docker-compose up --build
+```
 
-## 🤝 Author
-
-Built by **Sumanth Ponugupati** – for scalable, secure, and intelligent traffic monitoring 🚗🟍️🚵️
-
-Feel free to ⭐ the repo and contribute!
+| Interface | URL |
+|---|---|
+| Streamlit UI | http://localhost:8501 |
+| FastAPI docs | http://localhost:8000/docs |
+| RabbitMQ dashboard | http://localhost:15672 (guest / guest) |
 
 ---
 
-## 🦾 License
+## API
 
-MIT License
+Every request needs an API key header:
+
+```http
+X-API-Key: <your-key>
+```
+
+- Rate limit: 10 requests per minute per key, enforced in Redis
+- Results are available at `GET /result/{task_id}`
+- The demo key in this repo is for local testing only. Change it before any real deployment.
+
+---
+
+## Limitations
+
+- Built as a prototype and tested locally with Docker Compose, not in production
+- Detection quality depends on the YOLO weights and input quality
+- Default credentials and the demo API key must be replaced for any real use
+
+---
+
+## Author
+
+Built by **Sumanth Ponugupati** · [LinkedIn](https://www.linkedin.com/in/sumanthponugupati/) · [Portfolio](https://sumanth3036.github.io/my-portfolio/)
+
+## License
+
+MIT
